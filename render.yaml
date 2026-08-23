@@ -1,0 +1,18 @@
+# Optional declarative deployment for Render (alternative to the Dashboard).
+services:
+  - type: web
+    name: omnimark
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 2 --threads 2 --timeout 120 --worker-class gthread app:app
+    envVars:
+      - key: API_KEY
+        sync: false # set manually in the Render Dashboard -> Environment
+      - key: LLM_BASE_URL
+        value: https://api.tokenrouter.com/v1
+      - key: LLM_MODEL
+        value: qwen/qwen3.8-max-free
+      - key: MAX_UPLOAD_MB
+        value: "25"

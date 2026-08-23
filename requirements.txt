@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────────────
+# OmniMark — pinned Python dependencies
+# Optimised for Render Free Tier (512 MB RAM / 0.1 CPU)
+# ─────────────────────────────────────────────────────────────────────
+
+# Web framework + production WSGI server
+Flask==3.1.3
+gunicorn==26.1.0
+
+# Conversion engine: Microsoft MarkItDown.
+# NOTE: selective extras instead of `[all]` to keep the slash small:
+#   - excludes the heavy Azure AI SDKs (az-doc-intel etc.)
+#   - excludes eager AI/whisper transitives
+#   - retains every converter OmniMark exposes in its UI
+#   If you'd rather have the kitchen sink: markitdown[all]==0.1.7
+markitdown[pptx,docx,xlsx,xls,pdf,outlook,audio-transcription]==0.1.7
+
+# OpenAI-compatible SDK used to reach the TokenRouter /v1 endpoint.
+# Powers: image captioning + OCR (chat.completions / image_url modality),
+#         chart analysis          (SVG → text inference) and
+#         audio transcription     (audio.transcriptions).
+openai==3.3.1
+
+# Loads .env during local development (Render injects real env vars).
+python-dotenv==1.1.1

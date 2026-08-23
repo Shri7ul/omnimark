@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="OmniMark — convert any file into clean, structured Markdown."/>
+<title>OmniMark · Any-File → Markdown</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      colors: {
+        obsidian: { 900:'#0b0e14', 800:'#121722', 700:'#1b2331', 600:'#232c3e',
+                     500:'#2f3a4f', 400:'#3d4a63', 300:'#53637e' }
+      },
+      fontFamily: { sans:['Inter','system-ui','sans-serif'],
+                    mono:['"JetBrains Mono"','ui-monospace','SFMono-Regular','Menlo','Consolas','monospace'] }
+    }}
+  };
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github-dark.min.css"/>
+<style>
+  :root{ }
+  html{ color-scheme:dark; }
+  body{ background:#0b0e14; }
+  *{ scrollbar-width:thin; scrollbar-color:#334155 #0c111a; }
+  ::-webkit-scrollbar{ width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb{ background:#334155; border-radius:8px; }
+  ::-webkit-scrollbar-track{ background:#0c111a; }
+
+  .brand-grad{ background:linear-gradient(135deg,#34d399,#22d3ee 45%,#818cf8); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .glass{ background:rgba(22,28,44,.55); border:1px solid rgba(148,163,184,.12); backdrop-filter:blur(16px); }
+  .card-hover{ transition:border-color .18s, box-shadow .25s, transform .18s; }
+  .card-hover:hover{ border-color:rgba(34,211,238,.35); box-shadow:0 10px 44px -14px rgba(34,211,238,.22); transform:translateY(-1px); }
+
+  .progress-track{ height:6px; border-radius:9999px; background:#1a2333; overflow:hidden; }
+  .progress-fill{ background:linear-gradient(90deg,#22d3ee,#818cf8,#34d399); width:100%; }
+  .progress-ind{ position:relative; height:6px; border-radius:9999px; overflow:hidden; }
+  .progress-ind .ind{ background:linear-gradient(90deg,transparent,#22d3ee,transparent); animation:slide 1.05s linear infinite; }
+  @keyframes slide{ from{ transform:translateX(-60%); } to{ transform:translateX(160%); } }
+
+  .tab-default{ color:#64748b; border-color:transparent; }
+  .tab-active{ color:#e2e8f0; background:rgba(56,189,248,.14); border-color:rgba(56,189,248,.4); box-shadow:0 0 18px -6px rgba(56,189,248,.4); }
+
+  .gutter{ font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:18px; color:#39466b; text-align:right; user-select:none; padding:12px 0; }
+  .editor-text{ font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:18px; tab-size:4; }
+
+  #preview h1,#preview h2,#preview h3,#preview h4{ color:#cbd5e1; font-weight:700; scroll-margin-top:92px; }
+  #preview h1{ font-size:1.75rem; } #preview h2{ font-size:1.4rem; }
+  #preview h3{ font-size:1.15rem; }  #preview h4{ font-size:1rem; }
+  #preview a{ color:#22d3ee; text-decoration:underline; }
+  #preview code{ background:#16202e; color:#7dd3fc; border-radius:5px; padding:.12em .38em; font-size:.87em; font-family:ui-monospace,Menlo,Consolas,monospace; }
+  #preview pre{ background:#0d1420; border:1px solid #1e2a3a; border-radius:11px; padding:13px 16px; overflow:auto; box-shadow:inset 0 0 0 1px rgba(255,255,255,.02); }
+  #preview pre code{ background:transparent; padding:0; border-radius:0; display:block; }
+  #preview table{ border-collapse:collapse; width:100%; margin:.9em 0; font-size:.92em; }
+  #preview th,#preview td{ border:1px solid #2f3a4f; padding:7px 11px; }
+  #preview th{ background:#18213a; color:#cbd5e1; }
+  #preview tr:nth-child(even) td{ background:rgba(255,255,255,.025); }
+  #preview blockquote{ border-left:3px solid #2dd4bf; background:#121a2e; color:#8fa6c4; padding:8px 14px; border-radius:8px; }
+  #preview img{ max-width:100%; border-radius:8px; }
+  #preview hr{ border-color:#2f3a4f; }
+  #preview li{ color:#aeb9cd; }
+  #preview ul,#preview ol{ color:#aeb9cd; }
+  #preview p{ color:#c7d2e0; }
+
+  .dot-live{ box-shadow:0 0 0 0 rgba(34,211,166,.55); animation:pulseDot 2.2s infinite; }
+  @keyframes pulseDot{ 0%{ box-shadow:0 0 0 0 rgba(34,211,166,.55); } 70%{ box-shadow:0 0 0 7px rgba(34,211,166,0); } 100%{ box-shadow:0 0 0 0 rgba(34,211,166,0); } }
+
+  .toast-in{ animation:toastRise .3s cubic-bezier(.2,.8,.2,1); }
+  @keyframes toastRise{ from{ opacity:0; transform:translateY(18px) scale(.96); } to{ opacity:1; transform:none; } }
+
+  .fade-in{ animation:fadeIn .4s ease; }
+  @keyframes fadeIn{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+
+  .nowrap-ellipsis{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+</head>
+<body class="min-h-screen bg-[#0b0e14] text-slate-200 antialiased"
+      data-model="{{ model }}" data-max-mb="{{ max_mb }}" data-configured="{{ 'true' if configured else 'false' }}">
+
+  <div class="fixed inset-0 pointer-events-none z-0"
+       style="background:radial-gradient(58% 46% at 16% -6%, rgba(34,211,238,.10), transparent 70%),
+                       radial-gradient(46% 38% at 92% 112%, rgba(129,140,248,.09), transparent 70%);">
+  </div>
+
+  <header class="sticky top-0 z-40 border-b border-white/5" style="background:rgba(11,14,20,.72); backdrop-filter:blur(18px);">
+    <div class="max-w-6xl mx-auto px-5 py-3.5 flex items-center justify-between gap-4">
+      <a href="/" class="flex items-center gap-2.5 group">
+        <span class="w-9 h-9 rounded-[10px] grid place-items-center text-white font-black text-[15px]"
+              style="background:linear-gradient(135deg,#22d3ee,#6366f1); box-shadow:0 6px 22px -6px rgba(34,211,238,.5);">⟁</span>
+        <span class="text-xl font-extrabold tracking-tight"><span class="brand-grad">Omni</span><span class="text-slate-200">Mark</span></span>
+      </a>
+      <div class="flex items-center gap-3">
+        <span class="hidden md:inline-flex items-center gap-1.5 text-[12px] text-slate-400 font-mono glass px-2.5 py-1 rounded-full">
+          <span class="dot-live w-1.5 h-1.5 rounded-full" style="background:#22d3a5;"></span>
+          {{ model }}
+        </span>
+        <span class="inline-flex items-center gap-1.5 text-[12px] text-slate-300 glass px-2.5 py-1 rounded-full">
+          <span class="text-[13px]">🛡</span> 25 MB max
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-5 pt-10 pb-16 relative z-10">
+
+    <section class="text-center mb-9">
+      <h1 class="text-4xl md:text-5xl font-extrabold tracking-tight text-slate-100">
+        Any file. <span class="brand-grad">Sharper Markdown.</span>
+      </h1>
+      <p class="mt-4 max-w-2xl mx-auto text-slate-400 text-[15.5px] leading-relaxed">
+        Drop a document, spreadsheet, image, audio clip or code file and get production-grade
+        <span class="text-cyan-300">Markdown</span> — structured headings, perfect tables, OCR'd
+        text and speech-to-text transcripts via a multimodal LLM.
+      </p>
+    </section>
+
+    <!-- Dropzone -->
+    <section class="glass rounded-[22px] card-hover" id="dropShell">
+      <input type="file" id="fileInput" class="hidden" accept="
+        .pdf,.docx,.pptx,.xlsx,.xls,.epub,.html,.htm,.xml,.csv,.json,.jsonl,
+        .jpg,.jpeg,.png,.webp,.svg,.mp3,.wav,.m4a,.ogg,.txt,.text,.md,.markdown,.py,.js,.log"/>
+      <div id="dropzone" class="rounded-[20px] border-2 border-dashed px-6 py-12 text-center cursor-pointer
+            transition-all duration-200" style="border-color:rgba(148,163,184,.22); background:rgba(15,20,32,.4);">
+        <div class="mx-auto mb-5 w-[86px] h-[86px] rounded-3xl grid place-items-center text-[42px]"
+             style="background:linear-gradient(135deg,rgba(34,211,238,.16),rgba(129,140,248,.18)); box-shadow:0 14px 46px -12px rgba(34,211,238,.35);">☄️</div>
+        <h2 class="text-xl font-semibold text-slate-100">Drag &amp; drop your file here</h2>
+        <p class="mt-2 text-slate-400">or <span class="text-cyan-300 font-semibold">click to browse</span> — one file at a time, up to 25&nbsp;MB</p>
+        <div id="formatChips" class="mt-5 flex flex-wrap justify-center gap-2"></div>
+      </div>
+<!-- Selected file card -->
+      <div id="fileCard" class="hidden rounded-[16px] p-5 flex items-center gap-4 fade-in"
+           style="background:linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.9)); border:1px solid rgba(148,163,184,.16); box-shadow:0 14px 40px -14px rgba(0,0,0,.6);">
+        <span id="fileIcon" class="w-[54px] h-[54px] rounded-[15px] grid place-items-center text-[26px]"></span>
+        <div class="min-w-0 flex-1">
+          <p id="fileName" class="text-[15px] font-semibold text-slate-100 truncate"></p>
+          <p id="fileMeta" class="mt-1 text-[12.5px] text-slate-400"></p>
+        </div>
+        <button id="btnRemove" class="px-3 py-2 rounded-[10px] text-[13px] font-medium text-rose-300" style="background:rgba(244,63,94,.12);">Remove</button>
+      </div>
+    </section>
+
+    <!-- Control row: convert + progress -->
+    <section class="mt-6 glass rounded-[16px] px-5 py-5 flex flex-col sm:flex-row items-center gap-4">
+      <button id="btnConvert" disabled
+              class="px-8 py-3.5 rounded-[14px] font-semibold text-[15px] inline-flex items-center gap-2.5 text-white"
+              style="background:linear-gradient(135deg,#22d3ee,#6366f1); box-shadow:0 10px 34px -10px rgba(34,211,238,.5);">
+        <span>⚡</span> Convert to Markdown
+      </button>
+      <div id="progressWrap" class="hidden flex-1 w-full">
+        <div class="progress-ind w-full"><div class="ind w-full"></div></div>
+        <p id="progressLabel" class="mt-2 text-[12.5px] text-slate-400"></p>
+      </div>
+      <div id="progressWrap2" class="hidden flex-1 w-full">
+        <div class="progress-track"><div id="progressFill" class="progress-fill" style="width:0%"></div></div>
+        <p id="progressLabel2" class="mt-2 text-[12.5px] text-slate-400"></p>
+      </div>
+    </section>
+
+    <div id="alertWrap" class="hidden mt-4 rounded-[14px] px-5 py-3.5 text-[14px] leading-relaxed"
+         style="background:rgba(127,29,29,.25); border:1px solid rgba(248,113,113,.35); color:#fecaca;"></div>
+    {% if not configured %}
+    <div class="mt-4 rounded-[14px] px-5 py-3.5 text-[13.5px]"
+         style="background:rgba(234,179,8,.12); border:1px solid rgba(234,224,255,.18); color:#fde68a;">
+      ⚠️ <b>No API key configured.</b> Set the <code class="font-mono">API_KEY</code> env var (see
+      <code class="font-mono">.env.example</code>) to enable LLM vision / OCR / speech-to-text.
+      Plain document, table and code conversion will still work.
+    </div>
+    {% endif %}
+<!-- Results -->
+    <section id="resultShell" class="hidden mt-8 rounded-[20px] glass overflow-hidden">
+      <div class="flex items-center justify-between gap-3 border-b border-white/5 px-4 py-3 flex-wrap">
+        <div class="flex items-center gap-1.5 rounded-[10px] p-1" style="background:rgba(15,23,42,.6);">
+          <button id="tabMarkdown" class="tab-active rounded-[9px] px-4 py-2 text-[13px] font-semibold">✍️ Markdown</button>
+          <button id="tabPreview"  class="tab-default rounded-[9px] px-4 py-2 text-[13px] font-semibold">👁 Preview</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="statBadges" class="flex items-center gap-2 text-[12px] font-mono text-slate-400"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btnCopy" class="px-3.5 py-2 rounded-[10px] text-[13px] font-semibold inline-flex items-center gap-1.5 text-slate-200"
+                  style="background:rgba(51,65,85,.7);">⧉ Copy</button>
+          <button id="btnDownload" class="px-3.5 py-2 rounded-[10px] text-[13px] font-semibold inline-flex items-center gap-1.5 text-white"
+                  style="background:linear-gradient(135deg,#22d3ee,#818cf8);">↓ Download .md</button>
+        </div>
+      </div>
+
+      <!-- Pane: Markdown editor with line numbers -->
+      <div id="paneMarkdown" class="p-0">
+        <div class="flex" style="font-family:ui-monospace,Menlo,Consolas,monospace;">
+          <div id="gutter" class="gutter shrink-0 overflow-hidden select-none"></div>
+          <textarea id="editor" spellcheck="false" class="editor-text flex-1 resize-none outline-none m-0 p-0 ps-2"
+                    style="background:transparent; border:0; width:100%; min-height:340px;"></textarea>
+        </div>
+      </div>
+
+      <!-- Pane: live preview -->
+      <div id="panePreview" class="hidden px-4 py-3">
+        <div id="preview" class="rounded-[14px] min-h-[340px] px-5 py-4"
+             style="background:rgba(13,20,32,.6);"></div>
+      </div>
+    </section>
+
+    <footer class="mt-12 border-t border border-white/5 py-6 text-center">
+      <p class="text-[13px] text-slate-500">
+        OmniMark — built on <span class="text-slate-300">Microsoft MarkItDown</span> + an OpenAI-compatible
+        multimodal LLM. Files stream to disk and are removed after conversion.
+      </p>
+    </footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const setText = (id, v) => $(id).textContent = v;
+
+  const MAX_MB = Number(document.body.dataset.maxMb || 25);
+  const MODEL = document.body.dataset.model || 'qwen/qwen3.8-max-free';
+
+  const K = {
+    pdf:  { i:'📕', c:['#f87171','#e11d48'], t:'PDF Document' },
+    docx: { i:'📘', c:['#60a5fa','#1d4ed8'], t:'Word Document' },
+    pptx: { i:'📊', c:['#fbbf24','#ea580c'], t:'PowerPoint Deck' },
+    xlsx: { i:'📗', c:['#4ade80','#15803d'], t:'Excel Workbook' },
+    xls:  { i:'📗', c:['#22c55e','#14532d'], t:'Legacy Excel' },
+    epub: { i:'📚', c:['#c084fc','#6d28d9'], t:'EPUB eBook' },
+    html: { i:'🌐', c:['#fb923c','#f97316'], t:'HTML Document' },
+    htm:  { i:'🌐', c:['#fb923c','#f97316'], t:'HTML Document' },
+    xml:  { i:'🗂️', c:['#a3e635','#65a30d'], t:'XML Data' },
+    csv:  { i:'☁️', c:['#22d3ee','#0891b2'], t:'CSV Table' },
+    json: { i:'🧾', c:['#facc15','#a16207'], t:'JSON Data' },
+    jsonl:{ i:'🧾', c:['#facc15','#a16207'], t:'JSON Lines' },
+    jpg:  { i:'🖼️', c:['#38bdf8','#0e7490'], t:'JPEG Image' },
+    jpeg: { i:'🖼️', c:['#38bdf8','#0e7490'], t:'JPEG Image' },
+    png:  { i:'🖼️', c:['#2dd4bf','#0f766e'], t:'PNG Image' },
+    webp: { i:'🖼️', c:['#fb7185','#be123c'], t:'WEBP Image' },
+    svg:  { i:'📐', c:['#c084fc','#7c3aed'], t:'SVG Vector / Chart' },
+    mp3:  { i:'🎵', c:['#f472b6','#be185d'], t:'MP3 Audio' },
+    wav:  { i:'🎵', c:['#fb7185','#e11d48'], t:'WAV Audio' },
+    m4a:  { i:'🎵', c:['#f472b6','#9d174d'], t:'M4A Audio' },
+    ogg:  { i:'🎵', c:['#c084fc','#7c3aed'], t:'OGG Audio' },
+    txt:  { i:'📄', c:['#94a3b8','#475569'], t:'Text File' },
+    text: { i:'📄', c:['#94a3b8','#475569'], t:'Text File' },
+    md:   { i:'✍️', c:['#818cf8','#4338ca'], t:'Markdown' },
+    markdown: { i:'✍️', c:['#818cf8','#4338ca'], t:'Markdown' },
+    py:   { i:'🐍', c:['#4ade80','#166534'], t:'Python Source' },
+    js:   { i:'⚡', c:['#facc15','#ca8a04'], t:'JavaScript Source' },
+    log:  { i:'🪵', c:['#9aa5b1','#3f4f5f'], t:'Log File' }
+  };
+
+  const CATS = [
+    { i:'📁', n:'Documents',   e:['pdf','docx','pptx','xlsx','xls','epub'] },
+    { i:'🌐', n:'Data + Web',  e:['html','xml','csv','json'] },
+    { i:'👁', n:'Vision / OCR',e:['jpg','png','webp','svg'] },
+    { i:'🎙', n:'Audio (STT)', e:['mp3','wav','m4a','ogg'] },
+    { i:'💻', n:'Code + Text', e:['txt','py','js','log'] }
+  ];
+  const ALLOWED_LABELS = Object.keys(K).map(e => '.' + e).join(', ');
+
+  let currentFile = null;
+  let currentName = '';
+  let busy = false;
+
+  const extOf = (name) => { const m = /\.([^.]+)$/.exec(name || ''); return m ? m[1].toLowerCase() : ''; };
+  const fmtSize = (n) => {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(2) + ' MB';
+  };
+  const esc = (s) => String(s || '').replace(/[&<>"']/g, (ch) => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[ch]);
+
+  // Human format chips
+  $('formatChips').innerHTML = CATS.map(c =>
+    '<span class="rounded-full px-2.5 py-1 text-[11.5px] text-slate-300" ' +
+    'style="background:rgba(47,58,79,.5); border:1px solid rgba(148,163,184,.12);">' + c.i + ' ' + c.n + '</span>'
+  ).join(' ');
+
+  function setDisabled(id, on) {
+    const el = $(id);
+    el.disabled = on;
+    el.style.opacity = on ? '.45' : '1';
+    el.style.cursor = on ? 'not-allowed' : 'pointer';
+  }
+  function hideEl(id) { $(id).classList.add('hidden'); }
+  function showEl(id) { $(id).classList.remove('hidden'); }
+  function setError(msg) {
+    setText('alertWrap', '⚠️ ' + msg);
+    showEl('alertWrap');
+  }
+
+  function clearResult() {
+    hideEl('resultShell');
+    $('editor').value = '';
+    updateGutter();
+    $('preview').innerHTML = '';
+    $('statBadges').innerHTML = '';
+  }
+
+  function acceptFile(file) {
+    const ext = extOf(file.name);
+    if (!K[ext]) {
+      setError('File type ".' + ext + '" is not supported here. Allowed: ' + ALLOWED_LABELS + '.');
+      return;
+    }
+    if (file.size > MAX_MB * 1048576) {
+      setError('"' + file.name + '" is ' + fmtSize(file.size) + ' — over the ' + MAX_MB + ' MB limit.');
+      return;
+    }
+    hideEl('alertWrap');
+    currentFile = file;
+    currentName = file.name;
+    const kind = K[ext];
+    const ic = $('fileIcon');
+    ic.textContent = kind.i;
+    ic.style.background = 'linear-gradient(135deg,' + kind.c[0] + ',' + kind.c[1] + ')';
+    ic.style.boxShadow = '0 0 26px -8px ' + kind.c[1];
+    setText('fileName', file.name);
+    setText('fileMeta', kind.t + ' · ' + fmtSize(file.size) + ' · .' + ext);
+    hideEl('dropzone');
+    showEl('fileCard');
+    setDisabled('btnConvert', false);
+    clearResult();
+  }
+
+  $('btnRemove').addEventListener('click', () => {
+    if (busy) return;
+    currentFile = null; currentName = '';
+    hideEl('fileCard'); showEl('dropzone');
+    setDisabled('btnConvert', true);
+    clearResult();
+  });
+
+  const dz = $('dropzone');
+  dz.addEventListener('click', () => { if (!busy) $('fileInput').click(); });
+  ['dragover', 'dragenter'].forEach(ev => dz.addEventListener(ev, (e) => {
+    if (!busy) { e.preventDefault(); dz.style.borderColor = 'rgba(34,211,238,.8)'; dz.style.background = 'rgba(20,32,54,.75)'; }
+  }));
+  ['dragleave', 'dragend', 'drop'].forEach(ev => dz.addEventListener(ev, (e) => {
+    e.preventDefault(); dz.style.borderColor = 'rgba(148,163,184,.22)'; dz.style.background = 'rgba(15,20,32,.4)';
+  }));
+  dz.addEventListener('drop', (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) acceptFile(f);
+  });
+  $('fileInput').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) acceptFile(f);
+    e.target.value = '';
+  });
+// ── Progress UI ─────────────────────────────────────────────────────────
+  function setProgress(pct, label) {
+    if (pct == null) {
+      hideEl('progressWrap2'); showEl('progressWrap');
+      setText('progressLabel', label || 'Converting…');
+    } else {
+      hideEl('progressWrap'); showEl('progressWrap2');
+      const f = $('progressFill');
+      f.style.width = Math.max(2, Math.min(100, pct)) + '%';
+      setText('progressLabel2', label || Math.round(pct) + '%');
+    }
+  }
+  function endProgress() { hideEl('progressWrap'); hideEl('progressWrap2'); }
+
+  // ── Convert upload (XMLHttpRequest for true upload progress) ───────────
+  function startConvert() {
+    if (!currentFile || busy) return;
+    busy = true;
+    hideEl('alertWrap');
+    setDisabled('btnConvert', true);
+    clearResult();
+
+    const fd = new FormData();
+    fd.append('file', currentFile, currentName);
+
+    const req = new XMLHttpRequest();
+    req.open('POST', '/convert');
+
+    if (req.upload) {
+      req.upload.addEventListener('progress', (e) => {
+        if (e.total) {
+          const pct = (e.loaded / e.total) * 100;
+          setProgress(pct, 'Uploading… ' + Math.round(pct) + '%');
+        }
+      });
+      req.upload.addEventListener('load', () => setProgress(null, 'Parsing & converting…'));
+    } else {
+      setProgress(null, 'Uploading…');
+    }
+
+    req.addEventListener('error', () => {
+      busy = false; endProgress();
+      setDisabled('btnConvert', false);
+      setError('Network error while talking to the server. Is the app reachable?');
+    });
+
+    req.addEventListener('load', () => {
+      busy = false; endProgress();
+      let data = null;
+      try { data = JSON.parse(req.responseText); } catch (_) { /* not JSON */ }
+      if (req.status >= 200 && req.status < 300 && data && data.ok) {
+        showResult(data);
+      } else {
+        setError((data && data.error) || ('Request failed — HTTP ' + req.status + '.'));
+      }
+      setDisabled('btnConvert', false);
+    });
+
+    req.send(fd);
+  }
+// ── Editor gutter, counters, preview ──────────────────────────────────
+  const editor = $('editor');
+  const gutter = $('gutter');
+
+  function updateGutter() {
+    const n = (editor.value || '').split('\n').length;
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) out[i] = String(i + 1);
+    gutter.textContent = out.join('\n');
+  }
+
+  function updateCounts() {
+    const txt = editor.value || '';
+    const words = txt.trim() ? txt.trim().split(/\s+/).length : 0;
+    const meta = lastMetaSize || '';
+    $('statBadges').innerHTML =
+      '<span>' + txt.length.toLocaleString() + ' chars</span>' +
+      '<span>' + words.toLocaleString() + ' words</span>' +
+      (meta ? '<span>' + meta + '</span>' : '');
+  }
+
+  function renderPreview() {
+    const el = $('preview');
+    let html;
+    try {
+      html = editor.value || '';
+      if (window.marked && window.marked.parse) {
+        html = window.marked.parse(html, { breaks: true, gfm: true });
+      } else {
+        html = esc(html);
+      }
+      if (window.DOMPurify) html = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+      el.innerHTML = html;
+      Array.from(el.querySelectorAll('pre code')).forEach((c) => {
+        try { if (window.hljs) hljs.highlightElement(c); } catch (_) { /* ignore */ }
+      });
+    } catch (_) {
+      el.innerHTML = '<p style="color:#f87171">⚠ Preview failed to render.</p>';
+    }
+  }
+
+  editor.addEventListener('input', () => { updateGutter(); updateCounts(); renderPreview(); });
+  editor.addEventListener('scroll', () => { gutter.scrollTop = editor.scrollTop; });
+
+  // ── Result display ─────────────────────────────────────────────────────
+  let lastMetaSize = '';
+  function showResult(data) {
+    lastMetaSize = (data.meta && data.meta.size_label) || '';
+    editor.value = data.markdown || '';
+    updateGutter();
+    updateCounts();
+    renderPreview();
+    showEl('resultShell');
+    activateTab('markdown');
+  }
+// ── Tabs ───────────────────────────────────────────────────────────────
+  const tabMarkdown = $('tabMarkdown'), tabPreview = $('tabPreview');
+  function activateTab(which) {
+    const md = which === 'markdown';
+    $('paneMarkdown').classList.toggle('hidden', !md);
+    $('panePreview').classList.toggle('hidden', md);
+    const set = (btn, active) => {
+      btn.className = 'rounded-[9px] px-4 py-2 text-[13px] font-semibold ' + (active ? 'tab-active' : 'tab-default');
+    };
+    set(tabMarkdown, md);
+    set(tabPreview, !md);
+  }
+  tabMarkdown.addEventListener('click', () => activateTab('markdown'));
+  tabPreview.addEventListener('click', () => activateTab('preview'));
+
+  // ── Copy ──────────────────────────────────────────────────────────────
+  function flash(btn, text) {
+    const prev = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = prev; }, 1400);
+  }
+  function copyFallback() {
+    editor.focus(); editor.select();
+    try { document.execCommand('copy'); } catch (_) { /* ignore */ }
+    try { (window.getSelection ? window.getSelection() : document.getSelection()).removeAllRanges(); } catch (_) { /* ignore */ }
+  }
+  $('btnCopy').addEventListener('click', () => {
+    const md = editor.value || '';
+    const ok = () => flash($('btnCopy'), '✓ Copied');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(ok).catch(() => { copyFallback(); ok(); });
+    } else { copyFallback(); ok(); }
+  });
+
+  // ── Download .md ──────────────────────────────────────────────────────
+  $('btnDownload').addEventListener('click', () => {
+    const md = editor.value || '';
+    const base = (currentName || 'output').replace(/\.[^.]+$/, '') + '.md';
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = base; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  // ── Wiring & init ─────────────────────────────────────────────────────
+  $('btnConvert').addEventListener('click', startConvert);
+  updateGutter();
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && currentFile && !busy) startConvert();
+  });
+})();
+</script>
+</body>
+</html>

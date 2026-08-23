@@ -88,7 +88,7 @@
 </style>
 </head>
 <body class="min-h-screen bg-[#0b0e14] text-slate-200 antialiased"
-      data-model="{{ model }}" data-max-mb="{{ max_mb }}" data-configured="{{ 'true' if configured else 'false' }}">
+      data-model="qwen/qwen3.8-max-free" data-max-mb="25" data-configured="true">
 
   <div class="fixed inset-0 pointer-events-none z-0"
        style="background:radial-gradient(58% 46% at 16% -6%, rgba(34,211,238,.10), transparent 70%),
@@ -105,7 +105,7 @@
       <div class="flex items-center gap-3">
         <span class="hidden md:inline-flex items-center gap-1.5 text-[12px] text-slate-400 font-mono glass px-2.5 py-1 rounded-full">
           <span class="dot-live w-1.5 h-1.5 rounded-full" style="background:#22d3a5;"></span>
-          {{ model }}
+          qwen/qwen3.8-max-free
         </span>
         <span class="inline-flex items-center gap-1.5 text-[12px] text-slate-300 glass px-2.5 py-1 rounded-full">
           <span class="text-[13px]">🛡</span> 25 MB max
@@ -214,14 +214,7 @@
 
     <div id="alertWrap" class="hidden mt-4 rounded-[14px] px-5 py-3.5 text-[14px] leading-relaxed"
          style="background:rgba(127,29,29,.25); border:1px solid rgba(248,113,113,.35); color:#fecaca;"></div>
-    {% if not configured %}
-    <div class="mt-4 rounded-[14px] px-5 py-3.5 text-[13.5px]"
-         style="background:rgba(234,179,8,.12); border:1px solid rgba(234,224,255,.18); color:#fde68a;">
-      ⚠️ <b>No API key configured.</b> Set the <code class="font-mono">API_KEY</code> env var (see
-      <code class="font-mono">.env.example</code>) to enable LLM vision / OCR / speech-to-text.
-      Plain document, table and code conversion will still work.
-    </div>
-    {% endif %}
+    
 <!-- Results -->
     <section id="resultShell" class="hidden mt-8 rounded-[20px] glass overflow-hidden">
       <div class="flex items-center justify-between gap-3 border-b border-white/5 px-4 py-3 flex-wrap">

@@ -14,26 +14,31 @@ Memory-tuned for Render Free Tier (512 MB RAM / 0.1 CPU):
 
 import base64
 import io
+import ipaddress
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 
 load_dotenv()  # Local development only — Render injects real environment variables.
 
-import openai as _openai
-from markitdown import MarkItDown
-from markitdown._exceptions import (
-    FileConversionException,
-    MissingDependencyException,
-    UnsupportedFormatException,
-)
+try:
+    import openai as _openai
+except ImportError:  # pragma: no cover — app boots without it; vision routes explain
+    _openai = None
+
+try:
+    from markitdown import MarkItDown
+except ImportError:  # pragma: no cover — app boots; conversion routes report the missing dep
+    MarkItDown = None
 
 # ---------------------------------------------------------------------------
 # Configuration — every knob is overridable via environment variables
@@ -109,25 +114,28 @@ class ConversionError(RuntimeError):
 def _get_builder():
     """Return the shared (OpenAI client, MarkItDown) pair, building lazily.
 
-    Built exactly once per worker process. Safe to call from the small
-    gunicorn gthread pool via a module-level lock. Keeps startup import
-    cost and RSS footprint as low as the Free Tier can afford.
+    The OpenAI client is optional: plain document/table/code conversion works
+    without it. Image/audio/vision paths raise a clear error instead of a crash
+    when no API key is configured. The MarkItDown instance is built once per
+    worker and shared across the gthread pool to bound RSS on the 512 MB tier.
     """
     global _builder_cache
     with _builder_lock:
         if _builder_cache is not None:
             return _builder_cache
-        if not API_KEY:
+        if MarkItDown is None:
             raise ConversionError(
-                "The app is not configured: set the API_KEY environment "
-                "variable (see .env.example) to enable LLM-backed conversion."
+                "MarkItDown is not installed on this deployment. "
+                "Run 'pip install -r requirements.txt' and redeploy."
             )
-        client = _openai.OpenAI(
-            base_url=LLM_BASE_URL,
-            api_key=API_KEY,
-            timeout=115.0,
-            max_retries=1,
-        )
+        client = None
+        if API_KEY and _openai is not None:
+            client = _openai.OpenAI(
+                base_url=LLM_BASE_URL,
+                api_key=API_KEY,
+                timeout=115.0,
+                max_retries=1,
+            )
         converter = MarkItDown(
             llm_client=client,
             llm_model=LLM_MODEL,
@@ -136,7 +144,7 @@ def _get_builder():
             enable_plugins=False,  # No 3rd-party plugin indexing for security/speed
         )
         _builder_cache = (client, converter)
-        logger.info("LLM pipeline ready: model=%s endpoint=%s", LLM_MODEL, LLM_BASE_URL)
+        logger.info("MarkItDown ready: model=%s llm_enabled=%s", LLM_MODEL, bool(client))
         return _builder_cache
 
 
@@ -156,26 +164,96 @@ def _wrap(code: str, lang: str = "") -> str:
     return f"```{lang}\n{code}\n```"
 
 
+def _sniff_image_mime(file_path: str):
+    """Best-effort MIME detection from magic bytes so the client sends an
+    accurate Content-Type (a common cause of HTTP 400 rejections)."""
+    try:
+        with open(file_path, "rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head.lstrip().startswith((b"<?xml", b"<svg")):
+        return "image/svg+xml"
+    return None
+
+
+def _vision_messages(prompt: str, data_uri: str):
+    """Standard OpenAI ChatCompletions vision message list."""
+    return [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ],
+    }]
+
+
 def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
-    """Direct multimodal vision call (base64 data-URI → chat.completions)."""
+    """Send the image as base64 ChatCompletions vision content.
+
+    Uses a ``data:<sniffed-mime>;base64,...`` URI so providers do not reject the
+    payload with a 400. Retries once with an OCR-focused prompt, then raises a
+    descriptive ConversionError rather than letting the request crash the app.
+    """
     client, _ = _get_builder()
-    with open(file_path, "rb") as fp:
-        b64 = base64.b64encode(fp.read()).decode("ascii")
+    if client is None:
+        raise ConversionError(
+            "No API key is configured; image vision/OCR is disabled. "
+            "Set the API_KEY environment variable to enable it."
+        )
+    with open(file_path, "rb") as fh:
+        b64 = base64.b64encode(fh.read()).decode("ascii")
     data_uri = f"data:{mime};base64,{b64}"
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ],
-        }],
+
+    attempts = [
+        _vision_messages(prompt, data_uri),
+        _vision_messages(
+            "Transcribe ALL visible text verbatim (OCR), then describe this image in "
+            "clean Markdown with headings, lists and tables where relevant.",
+            data_uri,
+        ),
+    ]
+    last_error = ""
+    for messages in attempts:
+        try:
+            response = client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                max_tokens=4096,
+                timeout=110.0,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                return content
+            last_error = "the model returned an empty response"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Vision request failed: %s", last_error)
+            
+    # Attempt graceful OCR fallback
+    try:
+        import pytesseract
+        from PIL import Image
+        text = pytesseract.image_to_string(Image.open(file_path)).strip()
+        if text:
+            return f"### OCR Extracted Text\n\n{text}"
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("Local OCR fallback failed: %s", e)
+
+    raise ConversionError(
+        "The vision model could not transcribe this image"
+        + (" (node returned no text)" if not last_error else f" — {last_error}")
     )
-    content = response.choices[0].message.content
-    if not content or not content.strip():
-        raise ConversionError("The vision model returned no useful text for this image.")
-    return content.strip()
 
 
 def _convert_svg(file_path: str) -> str:
@@ -222,6 +300,10 @@ def _local_transcribe(file_path: str, fmt: str) -> str:
 def _llm_transcribe(file_path: str, ext: str) -> str:
     """Speech-to-text via an OpenAI-compatible /audio/transcriptions endpoint."""
     client, _ = _get_builder()
+    if client is None:
+        raise ConversionError(
+            "No API key is configured; LLM audio transcription is disabled."
+        )
     mime = AUDIO_MIME.get(ext, "application/octet-stream")
     name = "audio" + ext
     with open(file_path, "rb") as fh:
@@ -279,47 +361,235 @@ def _convert_audio(file_path: str) -> str:
     )
 
 
+def _extract_pdf_text(path: str) -> str:
+    """Blind PDF text extraction fallback (used when MarkItDown yields nothing).
+
+    Tries pypdf first (lightweight, adequate for text-based PDFs), then
+    pdfminer.six. Raises ConversionError with a clear message if neither works,
+    e.g. for scanned/image-only PDFs that would need OCR.
+    """
+    errors = []
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        pages = [(p.extract_text() or "").strip() for p in reader.pages]
+        pages = [p for p in pages if p]
+        if pages:
+            return "\n\n".join(pages)
+        errors.append("pypdf returned no text")
+    except ImportError:
+        errors.append("pypdf not installed")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"pypdf error: {exc}")
+        logger.warning("pypdf extraction failed: %s", exc)
+
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = (pdfminer_extract(path) or "").strip()
+        if text:
+            return text
+        errors.append("pdfminer returned no text")
+    except ImportError:
+        errors.append("pdfminer not installed")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"pdfminer error: {exc}")
+        logger.warning("pdfminer extraction failed: %s", exc)
+
+    raise ConversionError(
+        "Could not extract text from this PDF (" + "; ".join(errors) + "). "
+        "It may be a scanned/image-only document; OCR is not available without "
+        "a configured vision model."
+    )
+
+
+def _raw_text_fallback(path: str) -> str:
+    """Best-effort decode of a plain text file to UTF-8-ish text."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return ""
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+_PIPE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _clean_fragmented_tables(markdown: str) -> str:
+    """Repair MarkItDown's fractured ASCII tables.
+
+    Many multi-column documents/CVs come out as stray ``| | |`` rows. This
+    repair keeps real multi-column tables intact but rewrites empty, one-cell,
+    and single-character fragments as clean bullet lines, and drops stray
+    separators — producing readable Markdown headings/lists instead of broken
+    table syntax.
+    """
+    cleaned = []
+    for raw in markdown.split("\n"):
+        line = raw.rstrip()
+        if not _PIPE_LINE_RE.match(line):
+            cleaned.append(line)
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells = [c for c in cells if c]
+        if not cells:
+            continue
+        # Drop separator rows like |---|---:---|
+        if all(re.fullmatch(r"[-:+=_]+", c) for c in cells):
+            continue
+        if len(cells) == 1:
+            # A lone cell (e.g. a heading fragment leaked from a table) → bullet.
+            cleaned.append(f"- {cells[0]}")
+        elif len(cells) >= 3 and all(len(c) <= 2 for c in cells):
+            # Character-by-character fragmentation like | T | h | i | n | → merge.
+            cleaned.append("- " + " ".join(cells))
+        else:
+            cleaned.append("| " + " | ".join(cells) + " |")
+    result = "\n".join(cleaned)
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
+
+
 def convert_file(path: str, filename: str) -> str:
-    """Route a file to the correct converter and return Markdown text."""
+    """Route a file to the best converter and return Markdown text (or raise
+    ConversionError with a user-facing message — never crash the worker)."""
     ext = Path(filename).suffix.lower()
 
-    # Format families that MarkItDown 0.1.7 does not route itself:
-    if ext in {".webp", ".svg"}:
-        if ext == ".webp":
-            return _llm_vision(path, IMAGE_MIME[ext], VISION_PROMPT)
+    if ext == ".svg":
         return _convert_svg(path)
+    if ext in IMAGE_MIME:  # jpg / jpeg / png / webp → vision/OCR endpoint
+        mime = _sniff_image_mime(path) or IMAGE_MIME[ext]
+        return _llm_vision(path, mime, VISION_PROMPT)
     if ext in AUDIO_MIME:
         return _convert_audio(path)
 
-    # Everything else goes to the native MarkItDown pipeline.
+    body = ""
+    conversion_error = ""
     try:
         _, converter = _get_builder()
         result = converter.convert(path)
         body = (result.markdown if result else "").strip()
-    except UnsupportedFormatException:
-        raise ConversionError(
-            "Unsupported file type — the converter sniffed the content and found "
-            "no handler for it. Submit a supported format under the 25 MB limit."
-        ) from None
-    except MissingDependencyException:
-        raise ConversionError(
-            "A converter dependency is missing on this deployment. Install the "
-            "full MarkItDown extras (markitdown[all]) and redeploy."
-        ) from None
-    except FileConversionException:
-        raise ConversionError(
-            "The file matched a known format but could not be parsed — it may be "
-            "corrupted or encrypted."
-        ) from None
-    except Exception:  # noqa: BLE001
-        logger.error("Unhandled conversion error:\n%s", traceback.format_exc())
-        raise ConversionError(
-            "An unexpected error occurred while converting the file."
-        ) from None
+        if not body and ext == ".pdf":
+            # MarkItDown frequently yields empty output for PDFs.
+            body = _extract_pdf_text(path)
+        elif not body and ext not in {".json", ".jsonl", ".csv"}:
+            body = _raw_text_fallback(path)
+    except Exception as exc:  # noqa: BLE001
+        conversion_error = f"{type(exc).__name__}: {exc}"
+        logger.warning("MarkItDown failed for %s (%s); trying fallbacks.", filename, conversion_error)
+        if ext == ".pdf":
+            body = _extract_pdf_text(path)
+        elif ext not in {".json", ".jsonl", ".csv"}:
+            body = _raw_text_fallback(path)
 
     if not body:
-        raise ConversionError("The converter produced an empty result.")
-    return body
+        raise ConversionError(
+            conversion_error or "The converter produced an empty result for this file."
+        )
+    return _clean_fragmented_tables(body)
+# ---------------------------------------------------------------------------
+# URL & text pipeline helpers
+# ---------------------------------------------------------------------------
+def _json_error(message: str, status: int):
+    return jsonify(ok=False, error=message), status
+
+
+def _valid_url_host(url: str) -> bool:
+    """Best-effort SSRF guard: must be http(s) and not a private/loopback IP."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().strip("[]")
+        if not host or parsed.scheme not in ("http", "https"):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+                return False
+        except ValueError:
+            pass  # a hostname, not an IP literal — follow-up redirects are still bounded
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fetch_url_to_file(url: str, dest: str) -> int:
+    """Stream a remote URL into `dest`, capped at MAX_CONTENT_LENGTH."""
+    import requests  # lazy import keeps cold start light
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; OmniMark/1.0; Markdown converter)",
+        "Accept": "text/html,text/markdown,text/plain,application/pdf;q=0.9,*/*;q=0.1",
+    }
+    size = 0
+    with requests.get(url, headers=headers, timeout=30, stream=True) as resp:
+        resp.raise_for_status()
+        with open(dest, "wb") as out:
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_CONTENT_LENGTH:
+                    raise ConversionError(
+                        "The remote page is larger than the "
+                        f"{MAX_UPLOAD_MB} MB processing limit."
+                    )
+                out.write(chunk)
+    return size
+
+
+def _decode_bytes(data: bytes) -> str:
+    """Decode fetched bytes trying common encodings."""
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _html_to_markdown(html: str) -> str:
+    """Convert raw HTML (e.g. downloaded article) to clean Markdown.
+
+    Tries MarkItDown's HTML converter first, then falls back to a
+    BeautifulSoup-based extraction so a broken dependency never crashes.
+    """
+    try:
+        _, converter = _get_builder()
+        result = converter.convert_stream(
+            io.BytesIO(html.encode("utf-8")),
+            file_extension=".html",
+        )
+        body = (result.markdown if result else "").strip()
+        if body:
+            return body
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MarkItDown HTML conversion failed; using bs4 fallback: %s", exc)
+
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "aside", "form", "iframe"]):
+            tag.decompose()
+        text = soup.get_text("\n")
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return "\n\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return html
+
+
+def _clean_pasted_text(text: str) -> str:
+    """Normalize pasted/raw text into tidy Markdown source."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+    # Collapse runs of blank lines (allow at most 1 empty line between blocks).
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 # ---------------------------------------------------------------------------
 # HTTP routes
 # ---------------------------------------------------------------------------
@@ -429,6 +699,96 @@ def convert():
                 os.remove(tmp_path)
             except OSError:
                 logger.warning("Could not remove temp file: %s", tmp_path)
+
+
+@app.post("/convert-url")
+def convert_url_route():
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return _json_error("No URL provided.", 400)
+    if not url.lower().startswith(("http://", "https://")):
+        return _json_error("URL must begin with http:// or https://.", 400)
+    if not _valid_url_host(url):
+        return _json_error(
+            "This URL cannot be fetched by the server (only public http(s) hosts are allowed).",
+            400,
+        )
+
+    tmp_path = None
+    started = time.perf_counter()
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="omnimark_url_", suffix=".html")
+        os.close(fd)
+        size = _fetch_url_to_file(url, tmp_path)
+        data = Path(tmp_path).read_bytes()
+        if data.lstrip().startswith(b"%PDF"):
+            # Some URLs point directly at PDF files → use the PDF pipeline.
+            markdown = convert_file(tmp_path, "download.pdf")
+        else:
+            text = _decode_bytes(data)
+            markdown = _html_to_markdown(text)
+        clean = _clean_fragmented_tables(markdown)
+    except ConversionError as exc:
+        return _json_error(str(exc), 422)
+    except Exception as exc:  # noqa: BLE001
+        cls = type(exc).__name__
+        msg = str(exc)
+        if "Timeout" in cls or "ConnectionError" in cls:
+            return _json_error("The URL request timed out or the host is unreachable.", 504)
+        if cls == "HTTPError" or "404" in msg or "403" in msg or "401" in msg:
+            return _json_error(f"The remote server refused the request: {msg}", 502)
+        logger.error("URL conversion error (%s):\n%s", url, traceback.format_exc())
+        return _json_error(f"Could not convert that URL: {msg}", 502)
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                logger.warning("Could not remove temp file: %s", tmp_path)
+
+    if not clean:
+        return _json_error("No readable content was found at that URL.", 422)
+    return jsonify(
+        ok=True,
+        markdown=clean,
+        meta={
+            "filename": "webpage.md",
+            "source": url,
+            "size_label": _human_size(size),
+            "characters": len(clean),
+            "words": len(clean.split()),
+            "model": LLM_MODEL,
+            "seconds": round(time.perf_counter() - started, 2),
+        },
+    )
+
+
+@app.post("/convert-text")
+def convert_text():
+    payload = request.get_json(silent=True) or {}
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return _json_error("No text content provided.", 400)
+    if len(content) > MAX_CONTENT_LENGTH:
+        return _json_error(f"Text exceeds the {MAX_UPLOAD_MB} MB limit.", 413)
+
+    started = time.perf_counter()
+    cleaned = _clean_pasted_text(content)
+    if not cleaned:
+        return _json_error("Nothing to convert after cleaning.", 422)
+    return jsonify(
+        ok=True,
+        markdown=cleaned,
+        meta={
+            "filename": "pasted-text.md",
+            "source": "direct text",
+            "characters": len(cleaned),
+            "words": len(cleaned.split()),
+            "model": LLM_MODEL,
+            "seconds": round(time.perf_counter() - started, 2),
+        },
+    )
 
 
 def _human_size(num: int) -> str:

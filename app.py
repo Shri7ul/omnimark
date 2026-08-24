@@ -99,6 +99,11 @@ SVG_PROMPT = (
 # Application
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
+try:
+    from flask_cors import CORS
+    CORS(app, resources={r"/*": {"origins": "*"}})
+except ImportError:
+    pass
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.config["JSON_SORT_KEYS"] = False
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY") or os.urandom(32)

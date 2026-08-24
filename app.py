@@ -255,10 +255,9 @@ def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
     except Exception as e:
         logger.warning("Local OCR fallback failed: %s", e)
 
-    raise ConversionError(
-        "The vision model could not transcribe this image"
-        + (" (node returned no text)" if not last_error else f" — {last_error}")
-    )
+    # Return graceful error message instead of crashing with HTTP 500 / 422
+    err_msg = last_error or "Vision API unreachable or incompatible"
+    return f"*(Image conversion failed: {err_msg}. Basic file metadata: {mime})*"
 
 
 def _convert_svg(file_path: str) -> str:
@@ -407,6 +406,26 @@ def _extract_pdf_text(path: str) -> str:
     )
 
 
+def _extract_pptx_text(path: str) -> str:
+    """Fallback text extraction for PPTX files when MarkItDown fails."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(path)
+        slides_text = []
+        for i, slide in enumerate(prs.slides):
+            slide_text = [f"## Slide {i+1}"]
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_text.append(shape.text.strip())
+            slides_text.append("\n".join(slide_text))
+        return "\n\n".join(slides_text)
+    except ImportError:
+        logger.warning("python-pptx is not installed for fallback.")
+    except Exception as exc:
+        logger.warning("python-pptx extraction failed: %s", exc)
+    return ""
+
+
 def _raw_text_fallback(path: str) -> str:
     """Best-effort decode of a plain text file to UTF-8-ish text."""
     try:
@@ -478,8 +497,9 @@ def convert_file(path: str, filename: str) -> str:
         result = converter.convert(path)
         body = (result.markdown if result else "").strip()
         if not body and ext == ".pdf":
-            # MarkItDown frequently yields empty output for PDFs.
             body = _extract_pdf_text(path)
+        elif not body and ext == ".pptx":
+            body = _extract_pptx_text(path)
         elif not body and ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
     except Exception as exc:  # noqa: BLE001
@@ -487,6 +507,8 @@ def convert_file(path: str, filename: str) -> str:
         logger.warning("MarkItDown failed for %s (%s); trying fallbacks.", filename, conversion_error)
         if ext == ".pdf":
             body = _extract_pdf_text(path)
+        elif ext == ".pptx":
+            body = _extract_pptx_text(path)
         elif ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
 
@@ -695,6 +717,7 @@ def convert():
         elif isinstance(err, _a("APITimeoutError")):
             status, message = 504, "The LLM request timed out. Please retry."
         else:
+            traceback.print_exc()
             logger.error("Unhandled route error:\n%s", traceback.format_exc())
             status, message = 500, "The server hit an unexpected error during conversion."
         return jsonify(ok=False, error=message), status

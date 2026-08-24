@@ -133,11 +133,11 @@ def _get_builder():
             client = _openai.OpenAI(
                 base_url=LLM_BASE_URL,
                 api_key=API_KEY,
-                timeout=45.0,
+                timeout=25.0,
                 max_retries=0,
             )
         converter = MarkItDown(
-            llm_client=client,
+            llm_client=None,  # Disabled for embedded images to prevent Gunicorn 30s timeouts
             llm_model=LLM_MODEL,
             llm_prompt=VISION_PROMPT,
             enable_builtins=True,
@@ -213,7 +213,7 @@ def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
             model=LLM_MODEL,
             messages=_vision_messages(prompt, data_uri),
             max_tokens=4096,
-            timeout=45.0,  # Strict timeout to avoid Gunicorn SIGKILL
+            timeout=25.0,  # Strict timeout to avoid Gunicorn 30s SIGKILL
         )
         content = (response.choices[0].message.content or "").strip()
         if content:
@@ -389,6 +389,31 @@ def _extract_pdf_text(path: str) -> str:
     )
 
 
+def _extract_pptx_text(path: str) -> str:
+    """Fallback text extractor for PPTX using python-pptx."""
+    errors = []
+    try:
+        from pptx import Presentation
+        prs = Presentation(path)
+        text_runs = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text_runs.append(shape.text)
+        if text_runs:
+            return "\n\n".join(text_runs)
+        errors.append("presentation is empty or contains no text")
+    except ImportError:
+        errors.append("python-pptx not installed")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"python-pptx error: {exc}")
+        logger.warning("python-pptx extraction failed: %s", exc)
+
+    raise ConversionError(
+        "Could not extract text from this PPTX (" + "; ".join(errors) + ")."
+    )
+
+
 def _raw_text_fallback(path: str) -> str:
     """Best-effort decode of a plain text file to UTF-8-ish text."""
     try:
@@ -462,6 +487,8 @@ def convert_file(path: str, filename: str) -> str:
         if not body and ext == ".pdf":
             # MarkItDown frequently yields empty output for PDFs.
             body = _extract_pdf_text(path)
+        elif not body and ext == ".pptx":
+            body = _extract_pptx_text(path)
         elif not body and ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
     except Exception as exc:  # noqa: BLE001
@@ -469,6 +496,8 @@ def convert_file(path: str, filename: str) -> str:
         logger.warning("MarkItDown failed for %s (%s); trying fallbacks.", filename, conversion_error)
         if ext == ".pdf":
             body = _extract_pdf_text(path)
+        elif ext == ".pptx":
+            body = _extract_pptx_text(path)
         elif ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
 

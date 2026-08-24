@@ -99,11 +99,6 @@ SVG_PROMPT = (
 # Application
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-try:
-    from flask_cors import CORS
-    CORS(app, resources={r"/*": {"origins": "*"}})
-except ImportError:
-    pass
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.config["JSON_SORT_KEYS"] = False
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY") or os.urandom(32)
@@ -202,49 +197,47 @@ def _vision_messages(prompt: str, data_uri: str):
 
 
 def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
-    """Send the image as base64 ChatCompletions vision content."""
-    try:
-        client, _ = _get_builder()
-        if client is None:
-            raise ConversionError(
-                "No API key is configured; image vision/OCR is disabled. "
-                "Set the API_KEY environment variable to enable it."
+    """Send the image as base64 ChatCompletions vision content.
+
+    Uses a ``data:<sniffed-mime>;base64,...`` URI so providers do not reject the
+    payload with a 400. Retries once with an OCR-focused prompt, then raises a
+    descriptive ConversionError rather than letting the request crash the app.
+    """
+    client, _ = _get_builder()
+    if client is None:
+        raise ConversionError(
+            "No API key is configured; image vision/OCR is disabled. "
+            "Set the API_KEY environment variable to enable it."
+        )
+    with open(file_path, "rb") as fh:
+        b64 = base64.b64encode(fh.read()).decode("ascii")
+    data_uri = f"data:{mime};base64,{b64}"
+
+    attempts = [
+        _vision_messages(prompt, data_uri),
+        _vision_messages(
+            "Transcribe ALL visible text verbatim (OCR), then describe this image in "
+            "clean Markdown with headings, lists and tables where relevant.",
+            data_uri,
+        ),
+    ]
+    last_error = ""
+    for messages in attempts:
+        try:
+            response = client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                max_tokens=4096,
+                timeout=110.0,
             )
-        with open(file_path, "rb") as fh:
-            b64 = base64.b64encode(fh.read()).decode("ascii")
-        data_uri = f"data:{mime};base64,{b64}"
-
-        attempts = [
-            _vision_messages(prompt, data_uri),
-            _vision_messages(
-                "Transcribe ALL visible text verbatim (OCR), then describe this image in "
-                "clean Markdown with headings, lists and tables where relevant.",
-                data_uri,
-            ),
-        ]
-        last_error = ""
-        for messages in attempts:
-            try:
-                response = client.chat.completions.create(
-                    model=LLM_MODEL,
-                    messages=messages,
-                    max_tokens=4096,
-                    timeout=110.0,
-                )
-                content = (response.choices[0].message.content or "").strip()
-                if content:
-                    return content
-                last_error = "the model returned an empty response"
-            except Exception as exc:  # noqa: BLE001
-                last_error = f"{type(exc).__name__}: {exc}"
-                logger.warning("Vision request failed: %s", last_error)
-                
-    except ConversionError:
-        raise
-    except Exception as e:
-        logger.warning("Vision setup failed: %s", e)
-        last_error = str(e)
-
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                return content
+            last_error = "the model returned an empty response"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Vision request failed: %s", last_error)
+            
     # Attempt graceful OCR fallback
     try:
         import pytesseract
@@ -257,9 +250,10 @@ def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
     except Exception as e:
         logger.warning("Local OCR fallback failed: %s", e)
 
-    # Return graceful error message instead of crashing with HTTP 500 / 422
-    err_msg = last_error or "Vision API unreachable or incompatible"
-    return f"*(Image conversion failed: {err_msg}. Basic file metadata: {mime})*"
+    raise ConversionError(
+        "The vision model could not transcribe this image"
+        + (" (node returned no text)" if not last_error else f" — {last_error}")
+    )
 
 
 def _convert_svg(file_path: str) -> str:
@@ -408,26 +402,6 @@ def _extract_pdf_text(path: str) -> str:
     )
 
 
-def _extract_pptx_text(path: str) -> str:
-    """Fallback text extraction for PPTX files when MarkItDown fails."""
-    try:
-        from pptx import Presentation
-        prs = Presentation(path)
-        slides_text = []
-        for i, slide in enumerate(prs.slides):
-            slide_text = [f"## Slide {i+1}"]
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_text.append(shape.text.strip())
-            slides_text.append("\n".join(slide_text))
-        return "\n\n".join(slides_text)
-    except ImportError:
-        logger.warning("python-pptx is not installed for fallback.")
-    except Exception as exc:
-        logger.warning("python-pptx extraction failed: %s", exc)
-    return ""
-
-
 def _raw_text_fallback(path: str) -> str:
     """Best-effort decode of a plain text file to UTF-8-ish text."""
     try:
@@ -499,9 +473,8 @@ def convert_file(path: str, filename: str) -> str:
         result = converter.convert(path)
         body = (result.markdown if result else "").strip()
         if not body and ext == ".pdf":
+            # MarkItDown frequently yields empty output for PDFs.
             body = _extract_pdf_text(path)
-        elif not body and ext == ".pptx":
-            body = _extract_pptx_text(path)
         elif not body and ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
     except Exception as exc:  # noqa: BLE001
@@ -509,8 +482,6 @@ def convert_file(path: str, filename: str) -> str:
         logger.warning("MarkItDown failed for %s (%s); trying fallbacks.", filename, conversion_error)
         if ext == ".pdf":
             body = _extract_pdf_text(path)
-        elif ext == ".pptx":
-            body = _extract_pptx_text(path)
         elif ext not in {".json", ".jsonl", ".csv"}:
             body = _raw_text_fallback(path)
 
@@ -719,7 +690,6 @@ def convert():
         elif isinstance(err, _a("APITimeoutError")):
             status, message = 504, "The LLM request timed out. Please retry."
         else:
-            traceback.print_exc()
             logger.error("Unhandled route error:\n%s", traceback.format_exc())
             status, message = 500, "The server hit an unexpected error during conversion."
         return jsonify(ok=False, error=message), status
@@ -846,6 +816,12 @@ def not_found(_err):
 
 @app.errorhandler(405)
 def bad_method(_err):
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return resp
     return jsonify(ok=False, error="Method not allowed."), 405
 
 
@@ -855,10 +831,20 @@ def server_error(_err):
 
 
 # ---------------------------------------------------------------------------
-# Security headers on every response
+# Security & CORS headers on every response
 # ---------------------------------------------------------------------------
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return resp
+
 @app.after_request
 def security_headers(resp):
+    resp.headers.setdefault("Access-Control-Allow-Origin", "*")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")

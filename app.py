@@ -133,7 +133,7 @@ def _get_builder():
             client = _openai.OpenAI(
                 base_url=LLM_BASE_URL,
                 api_key=API_KEY,
-                timeout=25.0,
+                timeout=120.0,
                 max_retries=0,
             )
         converter = MarkItDown(
@@ -213,7 +213,7 @@ def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
             model=LLM_MODEL,
             messages=_vision_messages(prompt, data_uri),
             max_tokens=4096,
-            timeout=25.0,  # Strict timeout to avoid Gunicorn 30s SIGKILL
+            timeout=120.0,
         )
         content = (response.choices[0].message.content or "").strip()
         if content:

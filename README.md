@@ -21,7 +21,6 @@ OmniMark is your all-in-one universal converter. Whether it's a messy PDF, a ran
 ### 🌐 See it in action:
 - **Live Demo:** [https://shriful.tech/omnimark](https://shriful.tech/omnimark)
 - **Demo Video:** [Watch Demo](https://lnkd.in/p/gauaa5UH)
-- **Author:** Shriful Islam (InHumanZ)
 
 ---
 

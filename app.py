@@ -202,47 +202,49 @@ def _vision_messages(prompt: str, data_uri: str):
 
 
 def _llm_vision(file_path: str, mime: str, prompt: str) -> str:
-    """Send the image as base64 ChatCompletions vision content.
-
-    Uses a ``data:<sniffed-mime>;base64,...`` URI so providers do not reject the
-    payload with a 400. Retries once with an OCR-focused prompt, then raises a
-    descriptive ConversionError rather than letting the request crash the app.
-    """
-    client, _ = _get_builder()
-    if client is None:
-        raise ConversionError(
-            "No API key is configured; image vision/OCR is disabled. "
-            "Set the API_KEY environment variable to enable it."
-        )
-    with open(file_path, "rb") as fh:
-        b64 = base64.b64encode(fh.read()).decode("ascii")
-    data_uri = f"data:{mime};base64,{b64}"
-
-    attempts = [
-        _vision_messages(prompt, data_uri),
-        _vision_messages(
-            "Transcribe ALL visible text verbatim (OCR), then describe this image in "
-            "clean Markdown with headings, lists and tables where relevant.",
-            data_uri,
-        ),
-    ]
-    last_error = ""
-    for messages in attempts:
-        try:
-            response = client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=messages,
-                max_tokens=4096,
-                timeout=110.0,
+    """Send the image as base64 ChatCompletions vision content."""
+    try:
+        client, _ = _get_builder()
+        if client is None:
+            raise ConversionError(
+                "No API key is configured; image vision/OCR is disabled. "
+                "Set the API_KEY environment variable to enable it."
             )
-            content = (response.choices[0].message.content or "").strip()
-            if content:
-                return content
-            last_error = "the model returned an empty response"
-        except Exception as exc:  # noqa: BLE001
-            last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("Vision request failed: %s", last_error)
-            
+        with open(file_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        data_uri = f"data:{mime};base64,{b64}"
+
+        attempts = [
+            _vision_messages(prompt, data_uri),
+            _vision_messages(
+                "Transcribe ALL visible text verbatim (OCR), then describe this image in "
+                "clean Markdown with headings, lists and tables where relevant.",
+                data_uri,
+            ),
+        ]
+        last_error = ""
+        for messages in attempts:
+            try:
+                response = client.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=messages,
+                    max_tokens=4096,
+                    timeout=110.0,
+                )
+                content = (response.choices[0].message.content or "").strip()
+                if content:
+                    return content
+                last_error = "the model returned an empty response"
+            except Exception as exc:  # noqa: BLE001
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("Vision request failed: %s", last_error)
+                
+    except ConversionError:
+        raise
+    except Exception as e:
+        logger.warning("Vision setup failed: %s", e)
+        last_error = str(e)
+
     # Attempt graceful OCR fallback
     try:
         import pytesseract

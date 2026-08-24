@@ -5,8 +5,8 @@ services:
     runtime: python
     plan: free
     region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --workers 2 --threads 2 --timeout 120 --worker-class gthread app:app
+    buildCommand: chmod +x ./render-build.sh && ./render-build.sh
+    startCommand: gunicorn --workers 2 --threads 2 --timeout 180 --worker-class gthread app:app
     envVars:
       - key: API_KEY
         sync: false # set manually in the Render Dashboard -> Environment
